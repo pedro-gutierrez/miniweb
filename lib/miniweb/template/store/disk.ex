@@ -1,4 +1,4 @@
-defmodule Miniweb.Template.DiskStore do
+defmodule Miniweb.Template.Store.Disk do
   @moduledoc """
   A builder that gives you a store that reads Liquid templates from disk
 

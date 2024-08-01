@@ -1,4 +1,7 @@
 defmodule Miniweb.Logger do
+  @moduledoc """
+  A simple request logger, mostly copied from `Plug.Logger` except for a couple of minor tweaks.
+  """
   @behaviour Plug
 
   alias Plug.Conn

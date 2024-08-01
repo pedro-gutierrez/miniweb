@@ -1,4 +1,4 @@
-defmodule Miniweb.Template.MemoryStore do
+defmodule Miniweb.Template.Store.Memory do
   @moduledoc """
   A builder that gives you a store that caches Liquid templates into memory.
 

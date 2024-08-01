@@ -8,9 +8,13 @@ defmodule Miniweb do
   defmodule MyApp.Web,
     use Miniweb,
       otp_app: :my_app,
-      sessions: true,
+      cookies: [
+        secret_key_base: {MyApp, :secret_key_base, []},
+        signing_salt: {MyApp, :signing_salt, []},
+        encryption_salt: {MyApp, :encryption_salt, []}
+      ],
       log: true,
-      cache_templates: true,
+      template_store: :memory, # or :disk
       context: MyApp.MyHandlers,
       handlers: [
         MyApp.MyHandlers.Posts,
@@ -19,19 +23,57 @@ defmodule Miniweb do
       ]
   ```
   """
+
+  alias Miniweb.Routes
+
   defmacro __using__(opts) do
     otp_app = Keyword.fetch!(opts, :otp_app)
     log = Keyword.get(opts, :log, true)
-    sessions = Keyword.get(opts, :sessions, true)
-    cache_templates = Keyword.get(opts, :cache_templates, true)
-    context = opts |> Keyword.fetch!(:context) |> extract_alias()
+
+    # Figure out how session cookies are going be setup. We will need to obtain values for the
+    # secret_key_base, the signing salt, and the encryption salt:
+    #
+    #   * if `nil`, then cookies will be disabled in this router.
+    #   * if `true`, then we will use `System.fetch_env!/1` as a default strategy
+    #   * otherwise, use the mfas provided by the user
+    cookies =
+      with true <- Keyword.get(opts, :cookies) do
+        Macro.escape(
+          secret_key_base: {System, :fetch_env!, ["SECRET_KEY_BASE"]},
+          signing_salt: {System, :fetch_env!, ["SIGNING_SALT"]},
+          encryption_salt: {System, :fetch_env!, ["ENCRYPTION_SALT"]}
+        )
+      end
+
+    template_store = Keyword.get(opts, :template_store, :memory)
     conn = Macro.var(:conn, nil)
 
-    routes =
+    handlers =
       opts
-      |> Keyword.get(:handlers, [])
+      |> Keyword.fetch!(:handlers)
       |> Enum.map(&extract_alias/1)
-      |> Enum.flat_map(& &1.routes(context))
+
+    # Infer the root context for all handler modules
+    # By convention, we look for the handler that has the `Root`
+    # bit, and we extract everything before that and we consider that's the context
+    context =
+      handlers
+      |> Enum.map(&Module.split/1)
+      |> Enum.find(&Enum.member?(&1, "Root"))
+      |> then(fn
+        nil ->
+          raise "No root handler provided"
+
+        handler ->
+          index = Enum.find_index(handler, &(&1 == "Root"))
+          Enum.slice(handler, 0, index)
+      end)
+      |> Module.concat()
+
+    # Draw all routes and generate a router matcher for each route
+    routes =
+      handlers
+      |> Enum.flat_map(&Routes.draw(&1, context: context))
       |> Enum.map(fn {method, path, handler} ->
         quote do
           unquote(method)(unquote(path),
@@ -56,14 +98,15 @@ defmodule Miniweb do
       # This is relevant when Miniweb is used standalone, ie, outside a phoenix application.
       # If using Phoenix, chances are that sessions configuration is already made in the
       # Phoenix endpoint, and in that case, there is no need to do it again here
-      @sessions unquote(sessions)
+      @cookies unquote(cookies)
 
-      if @sessions do
+      if is_list(@cookies) do
+        @secret_key_base_m @cookies |> Keyword.fetch!(:secret_key_base) |> elem(0)
+        @secret_key_base_f @cookies |> Keyword.fetch!(:secret_key_base) |> elem(1)
+        @secret_key_base_a @cookies |> Keyword.fetch!(:secret_key_base) |> elem(2)
+
         def put_secret_key_base(conn, _) do
-          value =
-            unquote(otp_app)
-            |> Application.fetch_env!(Miniweb)
-            |> Keyword.fetch!(:secret_key_base)
+          value = apply(@secret_key_base_m, @secret_key_base_f, @secret_key_base_a)
 
           put_in(conn.secret_key_base, value)
         end
@@ -73,8 +116,8 @@ defmodule Miniweb do
         plug(Plug.Session,
           store: :cookie,
           key: "_miniweb",
-          signing_salt: "Kp4e0ocZ",
-          encryption_salt: "Y2e0yz2j",
+          signing_salt: Keyword.fetch!(@cookies, :signing_salt),
+          encryption_salt: Keyword.fetch!(@cookies, :encryption_salt),
           http_only: true,
           log: false
         )
@@ -84,16 +127,18 @@ defmodule Miniweb do
 
       # Build a template store for dev or production
       # according to the caching settings defined by the user
-      @cache_templates unquote(cache_templates)
+      @template_store unquote(template_store)
 
-      if @cache_templates do
+      if @template_store == :memory do
         defmodule TemplateStore do
-          use Miniweb.Template.MemoryStore,
+          @moduledoc false
+          use Miniweb.Template.Store.Memory,
             otp_app: unquote(otp_app)
         end
       else
         defmodule TemplateStore do
-          use Miniweb.Template.DiskStore,
+          @moduledoc false
+          use Miniweb.Template.Store.Disk,
             otp_app: unquote(otp_app)
         end
       end
