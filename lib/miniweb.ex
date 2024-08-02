@@ -8,19 +8,31 @@ defmodule Miniweb do
   defmodule MyApp.Web,
     use Miniweb,
       otp_app: :my_app,
+      base_url: "...",
       cookies: [
-        secret_key_base: {MyApp, :secret_key_base, []},
-        signing_salt: {MyApp, :signing_salt, []},
-        encryption_salt: {MyApp, :encryption_salt, []}
+        secret_key_base: "...",
+        signing_salt: "...",
+        encryption_salt: "...",
       ],
       log: true,
-      template_store: :memory, # or :disk
-      context: MyApp.MyHandlers,
+      templates: MyApp.Templates,
       handlers: [
-        MyApp.MyHandlers.Posts,
-        MyApp.MyHandlers.Posts.Id,
-        MyApp.MyHandlers.Comments
-      ]
+        MyApp.Handlers.Root,
+        MyApp.Handlers.Posts,
+        MyApp.Handlers.Posts.Id,
+        MyApp.Handlers.Comments
+      ],
+      extra: %{ ... }
+  ```
+
+  with an in-memory template store:
+
+  ```elixir
+  defmodule MyApp.Templates do
+    use Miniweb.Template.Store.Memory,
+      otp_app: :my_app
+  end
+
   ```
   """
 
@@ -29,23 +41,10 @@ defmodule Miniweb do
   defmacro __using__(opts) do
     otp_app = Keyword.fetch!(opts, :otp_app)
     log = Keyword.get(opts, :log, true)
-
-    # Figure out how session cookies are going be setup. We will need to obtain values for the
-    # secret_key_base, the signing salt, and the encryption salt:
-    #
-    #   * if `nil`, then cookies will be disabled in this router.
-    #   * if `true`, then we will use `System.fetch_env!/1` as a default strategy
-    #   * otherwise, use the mfas provided by the user
-    cookies =
-      with true <- Keyword.get(opts, :cookies) do
-        Macro.escape(
-          secret_key_base: {System, :fetch_env!, ["SECRET_KEY_BASE"]},
-          signing_salt: {System, :fetch_env!, ["SIGNING_SALT"]},
-          encryption_salt: {System, :fetch_env!, ["ENCRYPTION_SALT"]}
-        )
-      end
-
-    template_store = Keyword.get(opts, :template_store, :memory)
+    templates = Keyword.get(opts, :templates, __CALLER__.module)
+    cookies = Keyword.get(opts, :cookies)
+    base_url = Keyword.get(opts, :base_url, "")
+    extra = Keyword.get(opts, :extra, %{})
     conn = Macro.var(:conn, nil)
 
     handlers =
@@ -87,6 +86,9 @@ defmodule Miniweb do
 
     quote do
       use Plug.Router
+      import Miniweb, only: [setting_value: 1]
+
+      alias Miniweb.Template
 
       # Optional request logger. If miniweb is being used from within a larger Phoenix
       # application, then this might not be necessary
@@ -101,12 +103,8 @@ defmodule Miniweb do
       @cookies unquote(cookies)
 
       if is_list(@cookies) do
-        @secret_key_base_m @cookies |> Keyword.fetch!(:secret_key_base) |> elem(0)
-        @secret_key_base_f @cookies |> Keyword.fetch!(:secret_key_base) |> elem(1)
-        @secret_key_base_a @cookies |> Keyword.fetch!(:secret_key_base) |> elem(2)
-
         def put_secret_key_base(conn, _) do
-          value = apply(@secret_key_base_m, @secret_key_base_f, @secret_key_base_a)
+          value = @cookies |> Keyword.fetch!(:secret_key_base) |> setting_value()
 
           put_in(conn.secret_key_base, value)
         end
@@ -116,31 +114,13 @@ defmodule Miniweb do
         plug(Plug.Session,
           store: :cookie,
           key: "_miniweb",
-          signing_salt: Keyword.fetch!(@cookies, :signing_salt),
-          encryption_salt: Keyword.fetch!(@cookies, :encryption_salt),
+          signing_salt: @cookies |> Keyword.fetch!(:signing_salt) |> setting_value(),
+          encryption_salt: @cookies |> Keyword.fetch!(:encryption_salt) |> setting_value(),
           http_only: true,
           log: false
         )
 
         plug(:fetch_session)
-      end
-
-      # Build a template store for dev or production
-      # according to the caching settings defined by the user
-      @template_store unquote(template_store)
-
-      if @template_store == :memory do
-        defmodule TemplateStore do
-          @moduledoc false
-          use Miniweb.Template.Store.Memory,
-            otp_app: unquote(otp_app)
-        end
-      else
-        defmodule TemplateStore do
-          @moduledoc false
-          use Miniweb.Template.Store.Disk,
-            otp_app: unquote(otp_app)
-        end
       end
 
       # Serve static assets from the user's app priv directory
@@ -164,27 +144,26 @@ defmodule Miniweb do
         do_response({:render, @not_found_opts}, unquote(conn))
       end
 
+      # The provider of templates. We need to pass this option to the template
+      # rendering api so that referenced templates can be resolved during runtime
+      @templates unquote(templates)
+      @render_opts [templates: @templates]
+
       # Helper functions to either building html markup
       # or sending a redirect back to the browser
       defp do_response({:render, opts}, conn) do
         template = Keyword.fetch!(opts, :template)
-
         layout = opts[:layout] || "layouts/default"
-
-        extra =
-          unquote(otp_app)
-          |> Application.get_env(Miniweb, [])
-          |> Keyword.get(:extra, %{})
 
         data = opts[:data] || %{}
 
         data =
-          extra
+          extra()
+          |> Map.put("baseUrl", base_url())
           |> Map.merge(data)
           |> Map.put("main", template)
 
-        html =
-          Miniweb.Template.render_named!(layout, data, template_store: __MODULE__.TemplateStore)
+        html = Template.render_named!(layout, data, @render_opts)
 
         status = opts[:status] || 200
 
@@ -197,6 +176,7 @@ defmodule Miniweb do
       defp do_response({:redirect, opts}, conn) do
         url = Keyword.fetch!(opts, :url)
         status = Keyword.get(opts, :status, 303)
+        url = base_url() <> url
 
         conn
         |> put_resp_content_type("text/text")
@@ -212,9 +192,15 @@ defmodule Miniweb do
           put_session(acc, key, value)
         end)
       end
+
+      defp base_url, do: setting_value(unquote(base_url))
+      defp extra, do: setting_value(unquote(Macro.escape(extra)))
     end
   end
 
   defp extract_alias({:__aliases__, _, parts}), do: Module.concat(parts)
   defp extract_alias(module) when is_atom(module), do: module
+
+  def setting_value({m, f, a}), do: apply(m, f, a)
+  def setting_value(other), do: other
 end

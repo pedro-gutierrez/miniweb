@@ -34,10 +34,10 @@ defmodule Miniweb.Template do
 
   Options:
 
-  * `:templates_store`: a module indicating how to retrieve and render templates
+  * `:templates`: a module indicating how to retrieve and render templates
   """
   def render_named!(name, data, opts) do
-    store = Keyword.fetch!(opts, :template_store)
+    store = Keyword.fetch!(opts, :templates)
 
     store.render_named!(name, data, opts)
   end
