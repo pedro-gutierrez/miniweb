@@ -2,5 +2,10 @@ defmodule Miniweb.Template.Parser do
   @moduledoc """
   Adds a some custom tags to Solid
   """
-  use Solid.Parser.Base, custom_tags: [Miniweb.Template.Slot]
+  use Solid.Parser.Base,
+    custom_tags: [
+      Miniweb.Template.Tag.CsrfToken,
+      Miniweb.Template.Tag.Get,
+      Miniweb.Template.Tag.Slot
+    ]
 end

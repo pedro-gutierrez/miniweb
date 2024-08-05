@@ -40,11 +40,11 @@ defmodule Miniweb do
 
   defmacro __using__(opts) do
     otp_app = Keyword.fetch!(opts, :otp_app)
-    log = Keyword.get(opts, :log, true)
+    log = Keyword.get(opts, :log, false)
     templates = Keyword.get(opts, :templates, __CALLER__.module)
     cookies = Keyword.get(opts, :cookies)
     base_url = Keyword.get(opts, :base_url, "")
-    extra = Keyword.get(opts, :extra, %{})
+    debug = Keyword.get(opts, :debug, false)
     conn = Macro.var(:conn, nil)
 
     handlers =
@@ -69,11 +69,21 @@ defmodule Miniweb do
       end)
       |> Module.concat()
 
-    # Draw all routes and generate a router matcher for each route
-    routes =
-      handlers
-      |> Enum.flat_map(&Routes.draw(&1, context: context))
-      |> Enum.map(fn {method, path, handler} ->
+    # Draw all routes
+    routes = Enum.flat_map(handlers, &Routes.draw(&1, context: context))
+
+    pretty_routes =
+      for {method, path, _handler} <- routes do
+        "#{method |> to_string() |> String.upcase()} #{path}"
+      end
+
+    if debug do
+      IO.puts("#{inspect(handlers: handlers, routes: routes)}")
+    end
+
+    # Generate a router matcher for each route
+    matchers =
+      for {method, path, handler} <- routes do
         quote do
           unquote(method)(unquote(path),
             do:
@@ -82,13 +92,25 @@ defmodule Miniweb do
               |> do_response(unquote(conn))
           )
         end
-      end)
+      end
+
+    # If we got a static list of extra user data, then convert this into a map where keys are
+    # strings so that we can make this available to templates
+    extra =
+      with pairs when is_list(pairs) <- Keyword.get(opts, :extra, []) do
+        for {k, v} <- pairs, into: %{} do
+          {to_string(k), v}
+        end
+      end
 
     quote do
       use Plug.Router
       import Miniweb, only: [setting_value: 1]
 
       alias Miniweb.Template
+
+      # For informational and/or debugging purposes only
+      def routes, do: unquote(pretty_routes)
 
       # Optional request logger. If miniweb is being used from within a larger Phoenix
       # application, then this might not be necessary
@@ -130,7 +152,7 @@ defmodule Miniweb do
       plug(:dispatch)
 
       # Application routes from handlers
-      unquote_splicing(routes)
+      unquote_splicing(matchers)
 
       # Catch all route, that renders a styled not found page
       # using a simple layout
