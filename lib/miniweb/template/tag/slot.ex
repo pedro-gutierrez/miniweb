@@ -1,4 +1,4 @@
-defmodule Miniweb.Template.Slot do
+defmodule Miniweb.Template.Tag.Slot do
   @moduledoc """
   A Solid custom tag for layouts
 
