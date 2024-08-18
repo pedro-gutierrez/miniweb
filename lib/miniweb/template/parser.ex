@@ -5,7 +5,7 @@ defmodule Miniweb.Template.Parser do
   use Solid.Parser.Base,
     custom_tags: [
       Miniweb.Template.Tag.CsrfToken,
-      Miniweb.Template.Tag.Get,
+      Miniweb.Template.Tag.Html,
       Miniweb.Template.Tag.Slot
     ]
 end

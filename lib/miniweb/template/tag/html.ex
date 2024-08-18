@@ -1,8 +1,9 @@
-defmodule Miniweb.Template.Tag.Get do
+defmodule Miniweb.Template.Tag.Html do
   @moduledoc """
   A Solid custom tag to dynamically resolve values from models, using a level of indirection.
   """
   import NimbleParsec
+  import Plug.HTML
 
   @behaviour Solid.Tag
 
@@ -13,7 +14,7 @@ defmodule Miniweb.Template.Tag.Get do
     space = Literal.whitespace(min: 0)
 
     ignore(BaseTag.opening_tag())
-    |> ignore(string("get"))
+    |> ignore(string("html"))
     |> ignore(space)
     |> tag(Argument.argument(), :path)
     |> tag(
@@ -32,30 +33,40 @@ defmodule Miniweb.Template.Tag.Get do
   def render(raw, context, _opts) do
     path = raw[:path][:value]
     ["at", {:field, [target]}] = raw[:arguments][:named_arguments]
-    iteration_vars = Map.fetch!(context, :iteration_vars)
-    target = Map.fetch!(iteration_vars, target)
-    path = String.split(path, ".")
-    prop = get_in(iteration_vars, path)
-    value = target |> Map.get(prop, "") |> format()
 
-    value =
-      case context.counter_vars["searchText"] do
-        "" ->
-          value
-
-        search_text ->
-          search_text
-          |> Regex.compile!("i")
-          |> Regex.replace(value, "<mark>\\0</mark>")
-      end
+    target = target(context, target)
+    prop = prop(context, path)
+    value = target |> Map.get(prop, "") |> format() |> maybe_highlight(context)
 
     [text: value]
+  end
+
+  defp maybe_highlight(value, context) do
+    case context.counter_vars["highlight"] do
+      nil ->
+        value
+
+      regex ->
+        Regex.replace(regex, value, "<mark>\\0</mark>")
+    end
+  end
+
+  defp target(context, path), do: context.iteration_vars[path] || context.counter_vars[path]
+
+  defp prop(context, path) do
+    if String.contains?(path, ".") do
+      path = String.split(path, ".")
+
+      get_in(context.iteration_vars, path) || get_in(context.counter_vars, path)
+    else
+      path
+    end
   end
 
   defp format(true), do: "Yes"
   defp format(false), do: "No"
 
-  defp format(str) when is_binary(str), do: str
+  defp format(str) when is_binary(str), do: html_escape(str)
 
   defp format(num) when is_atom(num) or is_number(num), do: to_string(num)
 
@@ -63,5 +74,9 @@ defmodule Miniweb.Template.Tag.Get do
     dt
     |> DateTime.shift_zone!("Europe/Paris")
     |> Calendar.strftime("%a, %B %d %H:%M:%S")
+  end
+
+  defp format(json) when is_map(json) do
+    json |> Jason.encode!() |> Jason.Formatter.pretty_print() |> format()
   end
 end
