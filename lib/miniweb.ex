@@ -37,6 +37,7 @@ defmodule Miniweb do
   """
 
   alias Miniweb.Routes
+  require Logger
 
   defmacro __using__(opts) do
     otp_app = Keyword.fetch!(opts, :otp_app)
@@ -44,7 +45,6 @@ defmodule Miniweb do
     templates = Keyword.get(opts, :templates, __CALLER__.module)
     cookies = Keyword.get(opts, :cookies)
     base_url = Keyword.get(opts, :base_url, "")
-    debug = Keyword.get(opts, :debug, false)
     conn = Macro.var(:conn, nil)
 
     handlers =
@@ -77,9 +77,8 @@ defmodule Miniweb do
         "#{method |> to_string() |> String.upcase()} #{path}"
       end
 
-    if debug do
-      IO.puts("#{inspect(handlers: handlers, routes: routes)}")
-    end
+    Logger.debug("Miniweb handlers: " <> inspect(handlers, pretty: true))
+    Logger.debug("Miniweb routes: " <> inspect(routes, pretty: true))
 
     # Generate a router matcher for each route
     matchers =
@@ -88,6 +87,7 @@ defmodule Miniweb do
           unquote(method)(unquote(path),
             do:
               unquote(conn)
+              |> debug_params()
               |> unquote(handler).unquote(method)(unquote(conn).params)
               |> do_response(unquote(conn))
           )
@@ -103,9 +103,11 @@ defmodule Miniweb do
         end
       end
 
-    quote do
+    quote location: :keep do
       use Plug.Router
+      use Plug.ErrorHandler
       import Miniweb, only: [setting_value: 1]
+      require Logger
 
       alias Miniweb.Template
 
@@ -145,6 +147,15 @@ defmodule Miniweb do
         plug(:fetch_session)
       end
 
+      plug(Plug.Parsers,
+        parsers: [:urlencoded, :multipart],
+        pass: ["*/*"]
+      )
+
+      plug(Plug.CSRFProtection)
+      plug(Plug.RequestId)
+      plug(Plug.MethodOverride)
+
       # Serve static assets from the user's app priv directory
       plug(Plug.Static, at: "/static", from: {unquote(otp_app), "priv/static"})
 
@@ -154,22 +165,42 @@ defmodule Miniweb do
       # Application routes from handlers
       unquote_splicing(matchers)
 
-      # Catch all route, that renders a styled not found page
-      # using a simple layout
-      @not_found_opts [
-        status: 404,
-        template: "not_found",
-        layout: "layouts/simple"
-      ]
-
+      # Catch all route, that renders a styled not found page using a simple layout
       match _ do
-        do_response({:render, @not_found_opts}, unquote(conn))
+        do_response(
+          {:render, status: 404, template: "404", layout: "layouts/simple"},
+          unquote(conn)
+        )
       end
 
       # The provider of templates. We need to pass this option to the template
       # rendering api so that referenced templates can be resolved during runtime
       @templates unquote(templates)
       @render_opts [templates: @templates]
+
+      @impl Plug.ErrorHandler
+      def handle_errors(conn, %{kind: kind, reason: reason, stack: stack}) do
+        kind = inspect(kind)
+        reason = inspect(reason)
+        stack = Exception.format_stacktrace(stack)
+
+        data = %{
+          "kind" => kind,
+          "reason" => reason,
+          "stack" => stack
+        }
+
+        Logger.error(inspect(data))
+
+        opts = [
+          data: data,
+          status: conn.status,
+          layout: "layouts/simple",
+          template: "#{conn.status}"
+        ]
+
+        do_response({:render, opts}, conn)
+      end
 
       # Helper functions to either building html markup
       # or sending a redirect back to the browser
@@ -196,8 +227,8 @@ defmodule Miniweb do
       end
 
       defp do_response({:redirect, opts}, conn) do
-        url = Keyword.fetch!(opts, :url)
-        status = Keyword.get(opts, :status, 303)
+        url = Keyword.get(opts, :url, "/")
+        status = Keyword.get(opts, :status, 302)
         url = base_url() <> url
 
         conn
@@ -210,9 +241,17 @@ defmodule Miniweb do
       defp put_session(conn, opts) do
         session = opts[:session] || %{}
 
+        Logger.debug("Miniweb session: " <> inspect(session, pretty: true))
+
         Enum.reduce(session, conn, fn {key, value}, acc ->
           put_session(acc, key, value)
         end)
+      end
+
+      defp debug_params(conn) do
+        Logger.debug("Miniweb params: " <> inspect(conn.params, pretty: true))
+
+        conn
       end
 
       defp base_url, do: setting_value(unquote(base_url))

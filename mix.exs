@@ -24,6 +24,7 @@ defmodule Miniweb.MixProject do
       {:bandit, "~> 1.5"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:inflex, "~> 2.1"},
+      {:jason, "~> 1.4"},
       {:plug, "~> 1.16"},
       {:solid, "~> 0.15"}
     ]

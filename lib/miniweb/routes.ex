@@ -3,7 +3,7 @@ defmodule Miniweb.Routes do
   Generates http routes out of handlers
   """
 
-  @supported_path_params [:id, :name]
+  @supported_path_params ["id", "name"]
 
   @doc """
   Return all routes supported by a handler.
