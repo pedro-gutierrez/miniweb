@@ -55,13 +55,20 @@ defmodule Miniweb.Template.Tag.Html do
 
   defp prop(context, path) do
     if String.contains?(path, ".") do
-      path = String.split(path, ".")
+      path =
+        path
+        |> String.split(".")
+        |> Enum.reject(&blank?/1)
 
       get_in(context.iteration_vars, path) || get_in(context.counter_vars, path)
     else
       path
     end
   end
+
+  defp blank?(""), do: true
+  defp blank?(nil), do: true
+  defp blank?(_), do: false
 
   defp format(true), do: "Yes"
   defp format(false), do: "No"

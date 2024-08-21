@@ -209,19 +209,21 @@ defmodule Miniweb do
         layout = opts[:layout] || "layouts/default"
 
         data = opts[:data] || %{}
+        conn = put_session(conn, opts)
+        session = get_session(conn)
 
         data =
           extra()
-          |> Map.put("baseUrl", base_url())
+          |> Map.merge(session)
           |> Map.merge(data)
           |> Map.put("main", template)
+          |> Map.put("baseUrl", base_url())
 
         html = Template.render_named!(layout, data, @render_opts)
 
         status = opts[:status] || 200
 
         conn
-        |> put_session(opts)
         |> put_resp_content_type("text/html")
         |> send_resp(status, html)
       end
@@ -241,11 +243,14 @@ defmodule Miniweb do
       defp put_session(conn, opts) do
         session = opts[:session] || %{}
 
-        Logger.debug("Miniweb session: " <> inspect(session, pretty: true))
+        conn =
+          Enum.reduce(session, conn, fn {key, value}, acc ->
+            put_session(acc, key, value)
+          end)
 
-        Enum.reduce(session, conn, fn {key, value}, acc ->
-          put_session(acc, key, value)
-        end)
+        Logger.debug("Miniweb session: " <> (conn |> get_session() |> inspect(pretty: true)))
+
+        conn
       end
 
       defp debug_params(conn) do
