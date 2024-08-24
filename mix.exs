@@ -25,6 +25,7 @@ defmodule Miniweb.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:inflex, "~> 2.1"},
       {:jason, "~> 1.4"},
+      {:phoenix_html, "~> 4.1"},
       {:plug, "~> 1.16"},
       {:solid, "~> 0.15"}
     ]

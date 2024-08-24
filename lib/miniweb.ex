@@ -8,21 +8,22 @@ defmodule Miniweb do
   defmodule MyApp.Web,
     use Miniweb,
       otp_app: :my_app,
-      base_url: "...",
       cookies: [
         secret_key_base: "...",
         signing_salt: "...",
         encryption_salt: "...",
       ],
       log: true,
-      templates: MyApp.Templates,
       handlers: [
         MyApp.Handlers.Root,
         MyApp.Handlers.Posts,
         MyApp.Handlers.Posts.Id,
         MyApp.Handlers.Comments
       ],
-      extra: %{ ... }
+      extra: [
+        base_url: "...",
+        ...
+      ]
   ```
 
   with an in-memory template store:
@@ -42,9 +43,9 @@ defmodule Miniweb do
   defmacro __using__(opts) do
     otp_app = Keyword.fetch!(opts, :otp_app)
     log = Keyword.get(opts, :log, false)
-    templates = Keyword.get(opts, :templates, __CALLER__.module)
     cookies = Keyword.get(opts, :cookies)
-    base_url = Keyword.get(opts, :base_url, "")
+    extra = Keyword.fetch!(opts, :extra)
+
     conn = Macro.var(:conn, nil)
 
     handlers =
@@ -77,7 +78,6 @@ defmodule Miniweb do
         "#{method |> to_string() |> String.upcase()} #{path}"
       end
 
-    Logger.debug("Miniweb handlers: " <> inspect(handlers, pretty: true))
     Logger.debug("Miniweb routes: " <> inspect(routes, pretty: true))
 
     # Generate a router matcher for each route
@@ -94,18 +94,11 @@ defmodule Miniweb do
         end
       end
 
-    # If we got a static list of extra user data, then convert this into a map where keys are
-    # strings so that we can make this available to templates
-    extra =
-      with pairs when is_list(pairs) <- Keyword.get(opts, :extra, []) do
-        for {k, v} <- pairs, into: %{} do
-          {to_string(k), v}
-        end
-      end
-
     quote location: :keep do
       use Plug.Router
       use Plug.ErrorHandler
+      use Miniweb.View, otp_app: unquote(otp_app)
+
       import Miniweb, only: [setting_value: 1]
       require Logger
 
@@ -173,11 +166,6 @@ defmodule Miniweb do
         )
       end
 
-      # The provider of templates. We need to pass this option to the template
-      # rendering api so that referenced templates can be resolved during runtime
-      @templates unquote(templates)
-      @render_opts [templates: @templates]
-
       @impl Plug.ErrorHandler
       def handle_errors(conn, %{kind: kind, reason: reason, stack: stack}) do
         kind = inspect(kind)
@@ -185,9 +173,10 @@ defmodule Miniweb do
         stack = Exception.format_stacktrace(stack)
 
         data = %{
-          "kind" => kind,
-          "reason" => reason,
-          "stack" => stack
+          title: Plug.Conn.Status.reason_atom(conn.status),
+          kind: kind,
+          reason: reason,
+          stack: stack
         }
 
         Logger.error(inspect(data))
@@ -195,8 +184,7 @@ defmodule Miniweb do
         opts = [
           data: data,
           status: conn.status,
-          layout: "layouts/simple",
-          template: "#{conn.status}"
+          view: :error_layout
         ]
 
         do_response({:render, opts}, conn)
@@ -205,25 +193,24 @@ defmodule Miniweb do
       # Helper functions to either building html markup
       # or sending a redirect back to the browser
       defp do_response({:render, opts}, conn) do
-        template = Keyword.fetch!(opts, :template)
-        layout = opts[:layout] || "layouts/default"
-
-        data = opts[:data] || %{}
-        conn = put_session(conn, opts)
-        session = get_session(conn)
+        view = Keyword.fetch!(opts, :view)
+        data = Keyword.get(opts, :data, [])
+        session = Keyword.get(opts, :session, %{})
 
         data =
           extra()
+          |> Map.new()
           |> Map.merge(session)
           |> Map.merge(data)
-          |> Map.put("main", template)
-          |> Map.put("baseUrl", base_url())
 
-        html = Template.render_named!(layout, data, @render_opts)
+        Logger.debug("Miniweb data: " <> inspect(data, pretty: true))
 
-        status = opts[:status] || 200
+        html = render(view, data)
+
+        status = Keyword.get(opts, :status, 200)
 
         conn
+        |> put_session(session)
         |> put_resp_content_type("text/html")
         |> send_resp(status, html)
       end
@@ -231,18 +218,18 @@ defmodule Miniweb do
       defp do_response({:redirect, opts}, conn) do
         url = Keyword.get(opts, :url, "/")
         status = Keyword.get(opts, :status, 302)
-        url = base_url() <> url
+        session = Keyword.get(opts, :session, %{})
+        base_url = extra() |> Keyword.fetch!(:base_url)
+        url = base_url <> url
 
         conn
         |> put_resp_content_type("text/text")
         |> put_resp_header("Location", url)
-        |> put_session(opts)
+        |> put_session(session)
         |> send_resp(status, "")
       end
 
-      defp put_session(conn, opts) do
-        session = opts[:session] || %{}
-
+      defp put_session(conn, session) do
         conn =
           Enum.reduce(session, conn, fn {key, value}, acc ->
             put_session(acc, key, value)
@@ -259,8 +246,7 @@ defmodule Miniweb do
         conn
       end
 
-      defp base_url, do: setting_value(unquote(base_url))
-      defp extra, do: setting_value(unquote(Macro.escape(extra)))
+      defp extra, do: setting_value(unquote(extra))
     end
   end
 
