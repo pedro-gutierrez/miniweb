@@ -21,14 +21,9 @@ defmodule Miniweb.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:bandit, "~> 1.5"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:inflex, "~> 2.1"},
-      {:jason, "~> 1.4"},
       {:phoenix_html, "~> 4.1"},
-      {:phoenix_live_view, "~> 1.0.0-rc.6"},
-      {:plug, "~> 1.16"},
-      {:solid, "~> 0.15"}
+      {:phoenix_live_view, "~> 1.0.0-rc.6"}
     ]
   end
 end
