@@ -20,6 +20,11 @@ defmodule Miniweb do
         MyApp.Handlers.Posts.Id,
         MyApp.Handlers.Comments
       ],
+      state: [
+        :foo,
+        :bar,
+        ...
+      ],
       extra: [
         base_url: "...",
         ...
@@ -45,6 +50,7 @@ defmodule Miniweb do
     log = Keyword.get(opts, :log, false)
     cookies = Keyword.get(opts, :cookies)
     extra = Keyword.fetch!(opts, :extra)
+    state = Keyword.fetch!(opts, :state)
 
     conn = Macro.var(:conn, nil)
 
@@ -190,12 +196,20 @@ defmodule Miniweb do
         do_response({:render, opts}, conn)
       end
 
+      @state unquote(state)
+
       # Helper functions to either building html markup
       # or sending a redirect back to the browser
       defp do_response({:render, opts}, conn) do
         view = Keyword.fetch!(opts, :view)
         data = Keyword.get(opts, :data, [])
         session = Keyword.get(opts, :session, %{})
+
+        conn = put_session(conn, session)
+
+        session = for key <- @state, into: %{} do
+          {key, get_session(conn, key)}
+        end
 
         data =
           extra()
@@ -210,7 +224,6 @@ defmodule Miniweb do
         status = Keyword.get(opts, :status, 200)
 
         conn
-        |> put_session(session)
         |> put_resp_content_type("text/html")
         |> send_resp(status, html)
       end
@@ -230,10 +243,9 @@ defmodule Miniweb do
       end
 
       defp put_session(conn, session) do
-        conn =
-          Enum.reduce(session, conn, fn {key, value}, acc ->
-            put_session(acc, key, value)
-          end)
+        conn = Enum.reduce(session, conn, fn {key, value}, conn ->
+          put_session(conn, key, value)
+        end)
 
         Logger.debug("Miniweb session: " <> (conn |> get_session() |> inspect(pretty: true)))
 

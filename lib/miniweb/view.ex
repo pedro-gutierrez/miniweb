@@ -20,7 +20,7 @@ defmodule Miniweb.View do
       import Phoenix.HTML
       import Plug.CSRFProtection, only: [get_csrf_token: 0]
 
-      @extension ".eex"
+      @extension ".heex"
       @dir unquote(otp_app) |> :code.priv_dir() |> Path.join("views")
       @paths Path.wildcard(@dir <> "/**/*" <> @extension)
 
@@ -77,15 +77,20 @@ defmodule Miniweb.View do
           |> String.replace(@extension, "")
           |> String.to_atom()
 
-        EEx.function_from_file(:def, name, path, [:assigns], engine: Phoenix.HTML.Engine)
+        EEx.function_from_file(:def, name, path, [:assigns],
+          engine: Phoenix.LiveView.TagEngine,
+          caller: __ENV__,
+          source: path,
+          tag_handler: Phoenix.LiveView.HTMLEngine
+        )
+
         Logger.debug("Loaded view #{name}")
       end
 
       # Convenience function that convers the views's output iodata into a string
       def render(name, vars) do
         {micros, result} = :timer.tc(fn ->
-          {:safe, data} = apply(__MODULE__, name, [vars])
-          to_string(data)
+          __MODULE__ |> apply(name, [vars]) |> Phoenix.HTML.Safe.to_iodata()
         end)
 
         Logger.debug("Miniweb rendered view #{inspect(name)} in #{micros /1000}ms")
