@@ -21,24 +21,12 @@ defmodule Miniweb do
         MyApp.Handlers.Comments
       ],
       state: [
-        :foo,
-        :bar,
-        ...
+        foo: "bar",
       ],
       extra: [
         base_url: "...",
         ...
       ]
-  ```
-
-  with an in-memory template store:
-
-  ```elixir
-  defmodule MyApp.Templates do
-    use Miniweb.Template.Store.Memory,
-      otp_app: :my_app
-  end
-
   ```
   """
 
@@ -49,7 +37,6 @@ defmodule Miniweb do
     otp_app = Keyword.fetch!(opts, :otp_app)
     log = Keyword.get(opts, :log, false)
     cookies = Keyword.get(opts, :cookies)
-    extra = Keyword.fetch!(opts, :extra)
     state = Keyword.fetch!(opts, :state)
 
     conn = Macro.var(:conn, nil)
@@ -86,16 +73,16 @@ defmodule Miniweb do
 
     Logger.debug("Miniweb routes: " <> inspect(routes, pretty: true))
 
+    # Setup the initial state
+    initial_state = keyword_to_map(state)
+    Logger.debug("Miniweb initial state: " <> inspect(initial_state, pretty: true))
+
     # Generate a router matcher for each route
     matchers =
       for {method, path, handler} <- routes do
         quote do
           unquote(method)(unquote(path),
-            do:
-              unquote(conn)
-              |> debug_params()
-              |> unquote(handler).unquote(method)(unquote(conn).params)
-              |> do_response(unquote(conn))
+            do: handle_request(unquote(conn), unquote(method), unquote(handler), @initial_state)
           )
         end
       end
@@ -105,7 +92,7 @@ defmodule Miniweb do
       use Plug.ErrorHandler
       use Miniweb.View, otp_app: unquote(otp_app)
 
-      import Miniweb, only: [setting_value: 1]
+      import Miniweb, only: [setting: 1]
       require Logger
 
       alias Miniweb.Template
@@ -127,7 +114,7 @@ defmodule Miniweb do
 
       if is_list(@cookies) do
         def put_secret_key_base(conn, _) do
-          value = @cookies |> Keyword.fetch!(:secret_key_base) |> setting_value()
+          value = @cookies |> Keyword.fetch!(:secret_key_base) |> setting()
 
           put_in(conn.secret_key_base, value)
         end
@@ -137,8 +124,8 @@ defmodule Miniweb do
         plug(Plug.Session,
           store: :cookie,
           key: "_miniweb",
-          signing_salt: @cookies |> Keyword.fetch!(:signing_salt) |> setting_value(),
-          encryption_salt: @cookies |> Keyword.fetch!(:encryption_salt) |> setting_value(),
+          signing_salt: @cookies |> Keyword.fetch!(:signing_salt) |> setting(),
+          encryption_salt: @cookies |> Keyword.fetch!(:encryption_salt) |> setting(),
           http_only: true,
           log: false
         )
@@ -161,15 +148,25 @@ defmodule Miniweb do
       plug(:match)
       plug(:dispatch)
 
+      @initial_state unquote(Macro.escape(initial_state))
+
       # Application routes from handlers
       unquote_splicing(matchers)
 
       # Catch all route, that renders a styled not found page using a simple layout
       match _ do
-        do_response(
-          {:render, status: 404, template: "404", layout: "layouts/simple"},
-          unquote(conn)
-        )
+        opts = [
+          status: 404,
+          view: :error_layout,
+          data: %{
+            title: "Not found",
+            kind: "",
+            reason: "No such route",
+            stack: ""
+          }
+        ]
+
+        do_response({:render, opts}, unquote(conn))
       end
 
       @impl Plug.ErrorHandler
@@ -185,6 +182,11 @@ defmodule Miniweb do
           stack: stack
         }
 
+        data =
+          conn
+          |> read_session()
+          |> Map.merge(data)
+
         Logger.error(inspect(data))
 
         opts = [
@@ -196,7 +198,20 @@ defmodule Miniweb do
         do_response({:render, opts}, conn)
       end
 
-      @state unquote(state)
+      # Handle a request.
+      # We initialise the session, call the handler, and handle the response
+      defp handle_request(conn, method, handler, initial_state) do
+        conn =
+          conn
+          |> debug_params()
+          |> init_session(method, initial_state)
+
+        session = read_session(conn)
+
+        handler
+        |> apply(method, [conn.params, session])
+        |> do_response(conn)
+      end
 
       # Helper functions to either building html markup
       # or sending a redirect back to the browser
@@ -205,19 +220,16 @@ defmodule Miniweb do
         data = Keyword.get(opts, :data, [])
         session = Keyword.get(opts, :session, %{})
 
-        conn = put_session(conn, session)
-
-        session = for key <- @state, into: %{} do
-          {key, get_session(conn, key)}
-        end
+        conn = save_session(conn, session)
 
         data =
-          extra()
-          |> Map.new()
-          |> Map.merge(session)
+          conn
+          |> read_session()
           |> Map.merge(data)
 
-        Logger.debug("Miniweb data: " <> inspect(data, pretty: true))
+        Logger.debug(
+          "Miniweb rendering view #{inspect(view)} with data: " <> inspect(data, pretty: true)
+        )
 
         html = render(view, data)
 
@@ -232,20 +244,45 @@ defmodule Miniweb do
         url = Keyword.get(opts, :url, "/")
         status = Keyword.get(opts, :status, 302)
         session = Keyword.get(opts, :session, %{})
-        base_url = extra() |> Keyword.fetch!(:base_url)
+        base_url = get_session(conn, "base_url") || ""
         url = base_url <> url
 
         conn
         |> put_resp_content_type("text/text")
         |> put_resp_header("Location", url)
-        |> put_session(session)
+        |> save_session(session)
         |> send_resp(status, "")
       end
 
-      defp put_session(conn, session) do
-        conn = Enum.reduce(session, conn, fn {key, value}, conn ->
-          put_session(conn, key, value)
+      # Restore the session if necessary
+      # By convention this only applies to certains routes (eg GET requests).
+      # This is to ensure we work with default values in scenarios where a bookmarked url is being
+      # accessed while at the same time the cookies were cleared on the browser side
+      defp init_session(conn, :get, initial_state) do
+        Enum.reduce(initial_state, conn, fn {key, default}, conn ->
+          case get_session(conn, key) do
+            nil -> put_session(conn, key, default)
+            _ -> conn
+          end
         end)
+      end
+
+      defp init_session(conn, _, _), do: conn
+
+      # Reads the entire session in order to include it in the assigns so that the state is made
+      # available to views. Keys are given as atoms.
+      def read_session(conn) do
+        for {key, _} <- @initial_state, into: %{} do
+          {key, get_session(conn, to_string(key))}
+        end
+      end
+
+      # Save the session by merging the given map into the existing session
+      defp save_session(conn, session) do
+        conn =
+          Enum.reduce(session, conn, fn {key, value}, conn ->
+            put_session(conn, key, value)
+          end)
 
         Logger.debug("Miniweb session: " <> (conn |> get_session() |> inspect(pretty: true)))
 
@@ -257,14 +294,24 @@ defmodule Miniweb do
 
         conn
       end
-
-      defp extra, do: setting_value(unquote(extra))
     end
   end
 
   defp extract_alias({:__aliases__, _, parts}), do: Module.concat(parts)
   defp extract_alias(module) when is_atom(module), do: module
 
-  def setting_value({m, f, a}), do: apply(m, f, a)
-  def setting_value(other), do: other
+  def setting({m, f, a}), do: apply(m, f, a)
+  def setting(other), do: other
+
+  defp keyword_to_map(list) when is_list(list) do
+    if Keyword.keyword?(list) do
+      for {key, value} <- list, into: %{} do
+        {key, keyword_to_map(value)}
+      end
+    else
+      Enum.map(list, &keyword_to_map/1)
+    end
+  end
+
+  defp keyword_to_map(other), do: other
 end

@@ -67,6 +67,15 @@ defmodule Miniweb.View do
         end
       end
 
+      # Render a html hidden input that overrides the http method. To be used within forms
+      defmacro form_method(method) do
+        method = method |> to_string() |> String.upcase()
+
+        quote do
+          {:safe, "<input type=\"hidden\" name=\"_method\" value=\"#{unquote(method)}\">"}
+        end
+      end
+
       # Load all views in the priv/views directory and compile them into EEx
       # We use the Phoenix.HTML.Engine here to make sure the content generated is html safe by
       # default
@@ -89,11 +98,12 @@ defmodule Miniweb.View do
 
       # Convenience function that convers the views's output iodata into a string
       def render(name, vars) do
-        {micros, result} = :timer.tc(fn ->
-          __MODULE__ |> apply(name, [vars]) |> Phoenix.HTML.Safe.to_iodata()
-        end)
+        {micros, result} =
+          :timer.tc(fn ->
+            __MODULE__ |> apply(name, [vars]) |> Phoenix.HTML.Safe.to_iodata()
+          end)
 
-        Logger.debug("Miniweb rendered view #{inspect(name)} in #{micros /1000}ms")
+        Logger.debug("Miniweb rendered view #{inspect(name)} in #{micros / 1000}ms")
         result
       end
     end
